@@ -30,6 +30,42 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+
+	using ChunkFloors = std::array<std::array<const Floor*, 4>, 4>;
+
+	// A 16x16 chunk always lies inside one 64x64 grid cell, so a single cell lookup resolves its 4x4 nodes.
+	bool gatherChunkFloors(const Map& map, int32_t cx, int32_t cy, int32_t z, ChunkFloors& floors) {
+		floors = {};
+		const auto& grid = map.getGrid();
+		const auto* cell = grid.getCell(grid.findCellIndex(SpatialHashGrid::makeKeyFromCell(cx >> 2, cy >> 2)));
+		if (!cell) {
+			return false;
+		}
+
+		bool any_floor = false;
+		const int chunk_ix = cx & 3;
+		const int chunk_iy = cy & 3;
+		for (int ny = 0; ny < 4; ++ny) {
+			const int row_base = ((chunk_iy << 2) + ny) << 4;
+			for (int nx = 0; nx < 4; ++nx) {
+				const MapNode* nd = cell->nodes[row_base + (chunk_ix << 2) + nx].get();
+				if (nd) {
+					floors[nx][ny] = nd->getFloor(z);
+					any_floor = any_floor || floors[nx][ny] != nullptr;
+				}
+			}
+		}
+		return any_floor;
+	}
+
+	const TileLocation* chunkTileLocation(const ChunkFloors& floors, int tx, int ty) {
+		const Floor* fl = floors[tx >> 2][ty >> 2];
+		return fl ? &fl->locs[(tx & 3) * 4 + (ty & 3)] : nullptr;
+	}
+
+} // namespace
+
 ChunkCacheManager::ChunkCacheManager() {
 	bake_buffer_.reserve(2048);
 }
@@ -229,41 +265,8 @@ void ChunkCacheManager::bakeChunk(CachedChunk& chunk, const Map& map, const Rend
 	const int32_t base_y = chunk.coord.cy * CHUNK_SIZE;
 	const int32_t z = chunk.coord.z;
 
-	const int32_t cell_x = chunk.coord.cx >> 2;
-	const int32_t cell_y = chunk.coord.cy >> 2;
-	const int32_t chunk_ix = chunk.coord.cx & 3;
-	const int32_t chunk_iy = chunk.coord.cy & 3;
-
-	const Floor* floors[4][4] = {};
-	bool any_floor = false;
-
-	// Single lookup for the containing 64x64 cell
-	const auto& grid = map.getGrid();
-	const uint64_t cell_key = SpatialHashGrid::makeKeyFromCell(cell_x, cell_y);
-	const size_t cell_idx = grid.findCellIndex(cell_key);
-
-	if (cell_idx < grid.cellCount()) {
-		const auto* cell_ptr = grid.getCell(cell_idx);
-		if (cell_ptr) {
-			const auto& cell = *cell_ptr;
-			for (int ny = 0; ny < 4; ++ny) {
-				const int node_y = (chunk_iy << 2) + ny;
-				const int row_base = node_y << 4; // * 16
-				for (int nx = 0; nx < 4; ++nx) {
-					const int node_x = (chunk_ix << 2) + nx;
-					const MapNode* nd = cell.nodes[row_base + node_x].get();
-					if (nd) {
-						floors[nx][ny] = nd->getFloor(z);
-						if (floors[nx][ny]) {
-							any_floor = true;
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if (!any_floor) {
+	ChunkFloors floors;
+	if (!gatherChunkFloors(map, chunk.coord.cx, chunk.coord.cy, z, floors)) {
 		chunk.is_empty = true;
 		chunk.is_dirty = false;
 		chunk.instance_count = 0;
@@ -457,14 +460,8 @@ void ChunkCacheManager::bakeChunk(CachedChunk& chunk, const Map& map, const Rend
 				continue;
 			}
 
-			const Floor* fl = floors[tx >> 2][ty >> 2];
-			if (!fl) {
-				continue;
-			}
-
-			const int loc_idx = (tx & 3) * 4 + (ty & 3);
-			const TileLocation* loc = &fl->locs[loc_idx];
-			const Tile* tile = loc->get();
+			const TileLocation* loc = chunkTileLocation(floors, tx, ty);
+			const Tile* tile = loc ? loc->get() : nullptr;
 			if (!tile) {
 				continue;
 			}
@@ -618,14 +615,8 @@ void ChunkCacheManager::bakeChunk(CachedChunk& chunk, const Map& map, const Rend
 				continue;
 			}
 
-			const Floor* fl = floors[tx >> 2][ty >> 2];
-			if (!fl) {
-				continue;
-			}
-
-			const int loc_idx = (tx & 3) * 4 + (ty & 3);
-			const TileLocation* loc = &fl->locs[loc_idx];
-			const Tile* tile = loc->get();
+			const TileLocation* loc = chunkTileLocation(floors, tx, ty);
+			const Tile* tile = loc ? loc->get() : nullptr;
 			if (!tile) {
 				continue;
 			}
@@ -1095,6 +1086,15 @@ void ChunkCacheManager::renderDynamicOverlays(
 		const int chunk_base_x = chunk.coord.cx * CHUNK_SIZE;
 		const int chunk_base_y = chunk.coord.cy * CHUNK_SIZE;
 
+		ChunkFloors floors;
+		if (!gatherChunkFloors(map, chunk.coord.cx, chunk.coord.cy, map_z, floors)) {
+			continue;
+		}
+		ChunkFloors floors_above {};
+		if (map_z == GROUND_LAYER + 1) {
+			gatherChunkFloors(map, chunk.coord.cx, chunk.coord.cy, GROUND_LAYER, floors_above);
+		}
+
 		for (size_t w = 0; w < 4; ++w) {
 			uint64_t word = chunk.dynamic_tile_mask[w];
 			while (word != 0) {
@@ -1110,9 +1110,12 @@ void ChunkCacheManager::renderDynamicOverlays(
 				const int draw_y = y * TILE_SIZE + base_draw_y;
 
 				if (ctx.view.IsPixelVisible(draw_x, draw_y)) {
-					const TileLocation* loc = map.getTileL(x, y, map_z);
+					const TileLocation* loc = chunkTileLocation(floors, tx, ty);
+					ASSERT(loc == map.getTileL(x, y, map_z));
 					if (loc) {
-						const Tile* tile_above = (map_z == GROUND_LAYER + 1) ? map.getTile(x, y, GROUND_LAYER) : nullptr;
+						const TileLocation* loc_above = chunkTileLocation(floors_above, tx, ty);
+						const Tile* tile_above = loc_above ? loc_above->get() : nullptr;
+						ASSERT(tile_above == ((map_z == GROUND_LAYER + 1) ? map.getTile(x, y, GROUND_LAYER) : nullptr));
 						tile_renderer.RenderDynamicPasses(sprite_batch, loc, ctx, draw_x, draw_y, tile_above);
 					}
 				}
