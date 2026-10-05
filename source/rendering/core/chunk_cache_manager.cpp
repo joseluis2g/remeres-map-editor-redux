@@ -777,7 +777,33 @@ void ChunkCacheManager::bakeChunk(CachedChunk& chunk, const Map& map, const Rend
 	chunk.is_dirty = false;
 }
 
+void ChunkCacheManager::recordFrameStats() {
+	const auto now = std::chrono::steady_clock::now();
+	if (last_frame_start_ != std::chrono::steady_clock::time_point {}) {
+		const double frame_ms = std::chrono::duration<double, std::milli>(now - last_frame_start_).count();
+		++stats_.frames;
+		stats_.frame_ms_total += frame_ms;
+		stats_.frame_ms_max = std::max(stats_.frame_ms_max, frame_ms);
+		stats_.bake_ms_total += frame_bake_ms_;
+		stats_.bake_ms_max = std::max(stats_.bake_ms_max, frame_bake_ms_);
+	}
+	last_frame_start_ = now;
+	frame_bake_ms_ = 0.0;
+
+	if (stats_.frames < PRUNE_INTERVAL_FRAMES) {
+		return;
+	}
+	const double frames = static_cast<double>(stats_.frames);
+	spdlog::info("[ChunkCacheStats] {} frames | frame ms avg {:.2f} max {:.2f} | bake ms avg {:.3f} max {:.2f} | bakes new {} edit {} anim {} | draws/frame {:.0f} | instances/frame {:.0f}",
+		stats_.frames, stats_.frame_ms_total / frames, stats_.frame_ms_max,
+		stats_.bake_ms_total / frames, stats_.bake_ms_max,
+		stats_.baked_new, stats_.baked_edit, stats_.baked_anim,
+		static_cast<double>(stats_.draws) / frames, static_cast<double>(stats_.instances) / frames);
+	stats_ = {};
+}
+
 void ChunkCacheManager::advanceFrame(int current_floor) {
+	recordFrameStats();
 	++current_frame_;
 	if (current_frame_ % PRUNE_INTERVAL_FRAMES == 0) {
 		prune(current_floor);
@@ -834,7 +860,10 @@ void ChunkCacheManager::renderFloorTerrain(
 	// Sparse Query: Touches ONLY populated chunks on map_z!
 	map.visitPopulatedChunks(min_cx, min_cy, max_cx, max_cy, map_z, [&](int cx, int cy) {
 		const ChunkCoord coord{ cx, cy, map_z };
+		const size_t cached_before = cached_chunks_.size();
 		CachedChunk& chunk = getOrCreateChunk(coord);
+		const bool is_new = cached_chunks_.size() != cached_before;
+		const bool was_dirty = chunk.is_dirty;
 
 		if (chunk.has_animated_terrain && ctx.options.show_preview && ctx.view.zoom < 10.0) {
 			bool frame_changed = false;
@@ -854,7 +883,16 @@ void ChunkCacheManager::renderFloorTerrain(
 		}
 
 		if (chunk.is_dirty) {
+			const auto bake_start = std::chrono::steady_clock::now();
 			bakeChunk(chunk, map, ctx);
+			frame_bake_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bake_start).count();
+			if (is_new) {
+				++stats_.baked_new;
+			} else if (was_dirty) {
+				++stats_.baked_edit;
+			} else {
+				++stats_.baked_anim;
+			}
 			++baked_count;
 		}
 		chunk.last_accessed_frame = current_frame_;
@@ -868,6 +906,9 @@ void ChunkCacheManager::renderFloorTerrain(
 
 		active_visible_chunks_.push_back(&chunk);
 	});
+
+	stats_.draws += rendered_chunk_count;
+	stats_.instances += rendered_instance_count;
 
 	if (baked_count > 0) {
 		spdlog::debug("[ChunkCache] Floor {}: Baked {} new/dirty chunk(s) | Visible: {} chunks ({} instances) | Total cached: {}/{}",
@@ -918,6 +959,8 @@ void ChunkCacheManager::renderFloorItems(
 		const GLintptr byte_offset = static_cast<GLintptr>(chunk_ptr->terrain_instance_count * sizeof(TileInstance));
 		glVertexArrayVertexBuffer(vao_, 1, chunk_ptr->vbo, byte_offset, sizeof(TileInstance));
 		glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(chunk_ptr->item_instance_count));
+		++stats_.draws;
+		stats_.instances += chunk_ptr->item_instance_count;
 	}
 
 	glBindVertexArray(0);
