@@ -11,7 +11,9 @@ struct gzFile_s;
 // close() must be called explicitly and isOk() checked afterwards: gzip errors surface on flush.
 class GzipNodeFileWriteHandle : public NodeFileWriteHandle {
 public:
-	GzipNodeFileWriteHandle(const std::filesystem::path& path, const std::string& identifier);
+	// level is the deflate level (1..9) stored in the gzip header. It changes
+	// only the compressed bytes, never the decompressed OTBM stream.
+	GzipNodeFileWriteHandle(const std::filesystem::path& path, const std::string& identifier, int level);
 	~GzipNodeFileWriteHandle() override;
 
 	void close() override;

@@ -39,16 +39,38 @@ record every stage's elapsed time so the next bottleneck is visible.
 cmake --build build-vs2022 --config Release --target rme --parallel 12
 ```
 
-Three saves per level on a fresh copy of the reference map; timings from the dialog
-text + `VERIFY.md` protocol. Read `PeakWorkingSet64` after each save.
+Three saves per level on a fresh copy of the reference map; map-load and save
+timings measured in-process and the real save wall-clock from the progress
+dialog, per the `VERIFY.md` protocol. Read `PeakWorkingSet64` while the process
+is alive (before exit).
 
 ## Evidence
 
-| level | save | size | load |
-|---|---|---|---|
-| 1 | | | |
-| 3 | | | |
-| 6 | 14.4 s (baseline) | 53.2 MB | 6.8 s |
+Measured 2026-10-19 on the reference map, `build-vs2022/Release`, three saves
+per level from a fresh copy; load is the map stage (`EditorFactory::LoadFromFile`).
+Full protocol and controls in [VERIFY.md](../VERIFY.md#p2--gzip-level-and-stage-timings-2026-10-19).
+
+| level | save | size | growth vs L6 | load |
+|---|---|---|---|---|
+| 1 | 5.46 s | 58,997,799 B | +10.79 % | 2.97 s |
+| 3 | 7.45 s | 56,202,290 B | +5.54 % | 2.47 s |
+| **4 (default)** | **6.22 s** | **54,553,112 B** | **+2.44 %** | **2.69 s** |
+| 6 | 12.40 s (this build) | 53,252,946 B | — | 2.61 s |
+
+Real UI save with level 4: 6.41–7.38 s. Decompressed payload and sidecar XML
+are byte-identical across levels. Save peak working set 4305.2 MB, budget
+4608 MB (V9).
+
+## Outcome
+
+- T7: `config.toml` → `[editor] otbm_compression_level = 1..9`, default **4**
+  (fastest level under the 5 % size bound; levels 1 and 3 exceed it).
+- T8: `Save stage:` lines with ms for tiles, finalize, spawns, houses, zones
+  and waypoints; also `Save: gzip compression level N`.
+- T13: peak working set measured; budget 4608 MB recorded in V9 and VERIFY.
+- Side fix: cancellation polling in the XML writers is gated to one event pump
+  per 100 ms, which cut the UI spawn stage from 9.9–12.0 s to ~0.6–0.7 s (cancel
+  latency stays under the 250 ms budget).
 
 ## Goal line
 
