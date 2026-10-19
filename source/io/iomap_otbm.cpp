@@ -19,6 +19,7 @@
 
 #include <format>
 #include <vector>
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <spdlog/spdlog.h>
@@ -87,6 +88,12 @@ bool reportSaveStage(int32_t percent, const wxString& message) {
 // be observed during those phases.
 bool shouldAbortSave() {
 	return g_gui.PollCancellation();
+}
+
+// Milliseconds since a save stage started, for the per-stage log lines that
+// make the next bottleneck visible without a profiler.
+double elapsedMs(std::chrono::steady_clock::time_point start) {
+	return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 } // namespace
 
@@ -690,9 +697,11 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 	}
 
 	const bool is_compressed = (map.getCompression() == OtbmCompression::Gzip);
+	const int compression_level = std::clamp(g_settings.getInteger(Config::OTBM_COMPRESSION_LEVEL), 1, 9);
 	std::unique_ptr<NodeFileWriteHandle> f;
 	if (is_compressed) {
-		f = std::make_unique<GzipNodeFileWriteHandle>(toPath(identifier), magic);
+		spdlog::info("Save: gzip compression level {}", compression_level);
+		f = std::make_unique<GzipNodeFileWriteHandle>(toPath(identifier), magic, compression_level);
 	} else {
 		f = std::make_unique<DiskNodeFileWriteHandle>(std::string(identifier.GetFullPath().utf8_str()), magic);
 	}
@@ -703,14 +712,17 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 	}
 
 	g_gui.SetLoadText(wxstr(std::format("Writing tiles into {}...", nstr(identifier.GetFullName()))));
+	const auto tiles_started = std::chrono::steady_clock::now();
 	if (!saveMap(map, *f)) {
 		return false;
 	}
+	spdlog::info("Save stage: tiles ({} tiles) {} ms", map.getTileCount(), elapsedMs(tiles_started));
 
 	if (!reportSaveStage(kFinalizeStagePercent, wxstr(std::format("Finishing file ({})...", nstr(identifier.GetFullName()))))) {
 		return false;
 	}
 
+	const auto finalize_started = std::chrono::steady_clock::now();
 	if (is_compressed) {
 		f->close();
 		if (!f->isOk()) {
@@ -718,6 +730,7 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 			return false;
 		}
 	}
+	spdlog::info("Save stage: finalize {} ms", elapsedMs(finalize_started));
 
 	// Auxiliary companion files: name them in the stages so the dialog says
 	// which files are being written, not just which kind of data.
@@ -734,6 +747,7 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 	if (!reportSaveStage(kSpawnStagePercent, wxstr(std::format("Saving spawns ({})...", spawn_files)))) {
 		return false;
 	}
+	const auto spawn_started = std::chrono::steady_clock::now();
 	// The spawn stage is the long one: it rescans the area of every spawn while
 	// it builds both files, so it reports which file it is on and how far it is.
 	int32_t last_spawn_percent = -1;
@@ -753,14 +767,17 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 		spdlog::error("Failed to save spawns!");
 		return false;
 	}
+	spdlog::info("Save stage: spawns {} ms", elapsedMs(spawn_started));
 
 	if (!reportSaveStage(kHouseStagePercent, wxstr(std::format("Saving houses ({})...", aux_name(map.getHouseFilename(), "-house.xml"))))) {
 		return false;
 	}
+	const auto houses_started = std::chrono::steady_clock::now();
 	if (!MapXMLIO::saveHouses(map, identifier, shouldAbortSave)) {
 		spdlog::error("IOMapOTBM::saveMapToDisk: Failed to save houses");
 		return false;
 	}
+	spdlog::info("Save stage: houses ({} houses) {} ms", map.houses.count(), elapsedMs(houses_started));
 
 	const auto waypointFormat = static_cast<Config::WaypointStorageFormat>(
 		g_settings.getInteger(Config::WAYPOINT_STORAGE_FORMAT)
@@ -772,10 +789,12 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 			spdlog::info("Auto-created zone file: {}", map.zonefile);
 		}
 		g_gui.SetLoadText(wxstr(std::format("Saving zones ({})...", map.zonefile)));
+		const auto zones_started = std::chrono::steady_clock::now();
 		if (!MapXMLIO::saveZones(map, identifier)) {
 			spdlog::error("IOMapOTBM::saveMapToDisk: Failed to save zones");
 			return false;
 		}
+		spdlog::info("Save stage: zones ({} zones) {} ms", map.zones.size(), elapsedMs(zones_started));
 		// Waypoints for OTBM 5 live in the OTBM WAYPOINTS node (written in saveMap
 		// per waypointFormat); only fall through for the optional XML companion.
 	}
@@ -784,6 +803,7 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 		if (!reportSaveStage(kWaypointStagePercent, wxstr(std::format("Saving waypoints ({})...", aux_name(map.getWaypointFilename(), "-waypoint.xml"))))) {
 			return false;
 		}
+		const auto waypoints_started = std::chrono::steady_clock::now();
 		if (map.waypoints.size() > 0) {
 			if (map.waypointfile.empty()) {
 				map.waypointfile = identifier.GetName() + "-waypoint.xml";
@@ -799,6 +819,7 @@ bool IOMapOTBM::saveMapToDisk(Map& map, const FileName& identifier) {
 				return false;
 			}
 		}
+		spdlog::info("Save stage: waypoints (XML, {} waypoints) {} ms", map.waypoints.size(), elapsedMs(waypoints_started));
 	}
 
 	// An Abort clicked while the last files were written must still discard the
@@ -881,7 +902,9 @@ bool IOMapOTBM::saveMap(Map& map, NodeFileWriteHandle& f) {
 			);
 
 			if (waypointFormat == Config::WaypointStorageFormat::OTBM || waypointFormat == Config::WaypointStorageFormat::BOTH) {
+				const auto waypoints_started = std::chrono::steady_clock::now();
 				writeWaypoints(map, f, mapVersion);
+				spdlog::info("Save stage: waypoints (OTBM, {} waypoints) {} ms", map.waypoints.size(), elapsedMs(waypoints_started));
 			} else if (mapVersion.otbm == MAP_OTBM_5) {
 				// OTBM 5 loaders require the OTBM_WAYPOINTS node to be present even if empty
 				f.addNode(OTBM_WAYPOINTS);

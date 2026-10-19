@@ -1,16 +1,21 @@
 #include "io/compression/gzip_node_file_write_handle.h"
 
+#include <algorithm>
+#include <format>
+
 #include <zlib.h>
 
-GzipNodeFileWriteHandle::GzipNodeFileWriteHandle(const std::filesystem::path& path, const std::string& identifier) {
+GzipNodeFileWriteHandle::GzipNodeFileWriteHandle(const std::filesystem::path& path, const std::string& identifier, int level) {
 	if (identifier.length() != 4) {
 		error_code = FILE_INVALID_IDENTIFIER;
 		return;
 	}
+	const int clamped_level = std::clamp(level, 1, 9);
+	const std::string mode = std::format("wb{}", clamped_level);
 #ifdef _WIN32
-	gz = gzopen_w(path.c_str(), "wb6");
+	gz = gzopen_w(path.c_str(), mode.c_str());
 #else
-	gz = gzopen(path.c_str(), "wb6");
+	gz = gzopen(path.c_str(), mode.c_str());
 #endif
 	if (!gz) {
 		error_code = FILE_COULD_NOT_OPEN;

@@ -111,16 +111,24 @@ namespace {
 	}
 
 	// Polling the progress dialog pumps events, so it is not free: the
-	// auxiliary writers check for cancellation every this many items.
-	constexpr size_t kCancelPollStride = 128;
+	// auxiliary writers check for cancellation at most once per
+	// kCancelPollInterval. That keeps cancellation latency well under the
+	// 250 ms budget while stopping a 53k-area spawn scan from paying a full
+	// event pump hundreds of times.
+	constexpr auto kCancelPollInterval = std::chrono::milliseconds(100);
 
 	// Progress within one document, before the stage it belongs to is applied.
 	using ItemProgress = std::function<void(size_t done, size_t total)>;
 
-	bool shouldAbortWriting(const MapXMLIO::CancelCheck& shouldCancel, size_t& processed) {
-		if (!shouldCancel || ++processed % kCancelPollStride != 0) {
+	bool shouldAbortWriting(const MapXMLIO::CancelCheck& shouldCancel, std::chrono::steady_clock::time_point& next_poll) {
+		if (!shouldCancel) {
 			return false;
 		}
+		const auto now = std::chrono::steady_clock::now();
+		if (now < next_poll) {
+			return false;
+		}
+		next_poll = now + kCancelPollInterval;
 		return shouldCancel();
 	}
 
@@ -144,14 +152,14 @@ namespace {
 		std::vector<Creature*> creatureList;
 		ResetSavedGuard guard { creatureList };
 
-		size_t processed = 0;
+		auto next_cancel_poll = std::chrono::steady_clock::now();
 		// Building one spawn node rescans every tile inside its radius, and that
 		// scan dominates the stage, so report often enough to move the bar.
 		constexpr size_t kProgressReportStride = 256;
 		const size_t spawnCount = map.spawns.size();
 		size_t index = 0;
 		for (const auto& spawnPos : map.spawns) {
-			if (shouldAbortWriting(shouldCancel, processed)) {
+			if (shouldAbortWriting(shouldCancel, next_cancel_poll)) {
 				return false;
 			}
 			if (report && index % kProgressReportStride == 0) {
@@ -243,12 +251,12 @@ namespace {
 		std::vector<Creature*> creatureList;
 		ResetSavedGuard guard { creatureList };
 
-		size_t processed = 0;
+		auto next_cancel_poll = std::chrono::steady_clock::now();
 		constexpr size_t kProgressReportStride = 256;
 		const size_t spawnCount = map.spawns.size();
 		size_t index = 0;
 		for (const auto& spawnPos : map.spawns) {
-			if (shouldAbortWriting(shouldCancel, processed)) {
+			if (shouldAbortWriting(shouldCancel, next_cancel_poll)) {
 				return false;
 			}
 			if (report && index % kProgressReportStride == 0) {
@@ -656,9 +664,9 @@ bool MapXMLIO::saveHouses(const Map& map, pugi::xml_document& doc, const CancelC
 	decl.append_attribute("version") = "1.0";
 
 	pugi::xml_node houseNodes = doc.append_child("houses");
-	size_t processed = 0;
+	auto next_cancel_poll = std::chrono::steady_clock::now();
 	for (const auto& [id, housePtr] : map.houses) {
-		if (shouldAbortWriting(shouldCancel, processed)) {
+		if (shouldAbortWriting(shouldCancel, next_cancel_poll)) {
 			return false;
 		}
 
@@ -798,9 +806,9 @@ bool MapXMLIO::saveWaypoints(const Map& map, pugi::xml_document& doc, const Canc
 
 	pugi::xml_node rootNode = doc.append_child("waypoints");
 
-	size_t processed = 0;
+	auto next_cancel_poll = std::chrono::steady_clock::now();
 	for (const auto& [name, waypoint] : map.waypoints) {
-		if (shouldAbortWriting(shouldCancel, processed)) {
+		if (shouldAbortWriting(shouldCancel, next_cancel_poll)) {
 			return false;
 		}
 

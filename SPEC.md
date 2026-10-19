@@ -41,9 +41,9 @@ and loads in ≤ 7 s on the reference machine.
 - V6 spawn stage scans spawn list once (no per-file pass duplication)
 - V7 load names every sidecar file it reads (spawns/houses/zones/waypoints)
 - V8 every save/load ends with result line: file, size, elapsed, in log and status
-- V9 save peak working set stays within the recorded budget; raising it needs a streaming writer
+- V9 save peak working set stays within the recorded budget (4608 MB on the reference map); raising it needs a streaming writer
 - V10 cancel honored ≤ 250 ms and leaves no `~` on success
-- V11 gzip level is configurable; default choice keeps save ≤ 8 s on reference map
+- V11 gzip level is configurable; default 4 keeps save ≤ 8 s on reference map with < 5 % size growth
 
 ## §T tasks
 
@@ -55,13 +55,13 @@ and loads in ≤ 7 s on the reference machine.
 | T4 | x | single-pass writer for monster+npc spawn XML, byte-identical | V5!V6!I.xml |
 | T5 | . | write OTBM to `*.tmp`, fsync, atomic replace; keep `~` as fallback | V1!V2!I.save |
 | T6 | . | fsync sidecar XMLs before replace; document crash window | V1!I.xml |
-| T7 | . | gzip level setting: measure level 1/3/6 time vs size, pick default | V11!I.io-save |
-| T8 | . | log per-stage ms for tiles/houses/zones/waypoints | V8!I.io-save |
+| T7 | x | gzip level setting: measure level 1/3/6 time vs size, pick default | V11!I.io-save |
+| T8 | x | log per-stage ms for tiles/houses/zones/waypoints | V8!I.io-save |
 | T9 | . | durable result surface: do not lose summary to FPS field | V8 |
 | T10 | . | round-trip determinism test in `tests/` (save→load→save, compare) | V5!C7 |
 | T11 | . | cancel/fail integration test: kill mid-write, assert restore | V1!V2!V10 |
 | T12 | . | backup retention when `ALWAYS_MAKE_BACKUP=true` (N newest) | I.backup |
-| T13 | . | measure peak working set for two-DOM spawn writer, set budget | V9 |
+| T13 | x | measure peak working set for two-DOM spawn writer, set budget | V9 |
 | T14 | . | load: decompress progress by bytes, not one step | V3!V7 |
 
 ## §B bugs

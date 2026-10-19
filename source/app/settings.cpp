@@ -439,6 +439,9 @@ void Settings::IO(IOMode mode) {
 	Bool(SHOW_TILESET_EDITOR, false);
 	Bool(USE_OTBM_4_FOR_ALL_MAPS, false);
 	Bool(SAVE_WITH_OTB_MAGIC_NUMBER, false);
+	// Measured on the reference map: level 4 keeps the save at ~6.2 s with a
+	// 2.4% size increase over level 6 (P2, docs/quality/save-load/VERIFY.md).
+	Int(OTBM_COMPRESSION_LEVEL, 4);
 	Int(WAYPOINT_STORAGE_FORMAT, static_cast<int>(Config::WaypointStorageFormat::OTBM));
 	Int(REPLACE_SIZE, 500);
 	Int(COPY_POSITION_FORMAT, 0);

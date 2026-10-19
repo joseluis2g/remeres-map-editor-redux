@@ -299,6 +299,9 @@ namespace Config {
 
 		SHOW_ZONES,
 
+		// gzip deflate level for compressed OTBM saves (1 fastest .. 9 smallest)
+		OTBM_COMPRESSION_LEVEL,
+
 		LAST,
 	};
 
