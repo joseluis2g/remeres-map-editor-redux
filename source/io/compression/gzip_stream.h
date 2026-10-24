@@ -4,12 +4,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
 #include <vector>
 
 namespace Compression {
+
+	// Called after every inflated chunk with the bytes produced so far and the
+	// total advertised by the gzip footer (0 when the footer is unavailable).
+	using ProgressCallback = std::function<void(size_t bytes_done, size_t bytes_total)>;
 
 	[[nodiscard]] bool isGzip(std::span<const uint8_t> data) noexcept;
 	[[nodiscard]] bool isGzipFile(const std::filesystem::path& path);
@@ -23,7 +28,8 @@ namespace Compression {
 	// If limit is specified, reading stops once `limit` bytes have been inflated.
 	[[nodiscard]] std::optional<std::vector<uint8_t>> decompressGzipFile(
 		const std::filesystem::path& path,
-		size_t limit = std::numeric_limits<size_t>::max()
+		size_t limit = std::numeric_limits<size_t>::max(),
+		ProgressCallback on_progress = {}
 	);
 
 	// Reads raw bytes from a file up to `limit`.

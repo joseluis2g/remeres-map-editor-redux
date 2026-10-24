@@ -125,3 +125,5 @@ __pycache__/
 
 # Local agent runtime state (goals, loop logs): contains session ids
 /.opencode/
+/.cursor/hooks/state/
+config.toml

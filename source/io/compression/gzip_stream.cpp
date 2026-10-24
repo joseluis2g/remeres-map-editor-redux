@@ -76,7 +76,7 @@ namespace Compression {
 	constexpr size_t kMaxDecompressedBudget = 2ULL * 1024 * 1024 * 1024; // 2 GiB safety budget
 	constexpr size_t kMaxInitialReserve = 512 * 1024 * 1024; // 512 MiB initial reservation cap
 
-	std::optional<std::vector<uint8_t>> decompressGzipFile(const std::filesystem::path& path, size_t limit) {
+	std::optional<std::vector<uint8_t>> decompressGzipFile(const std::filesystem::path& path, size_t limit, ProgressCallback on_progress) {
 		GzPtr gz(openGz(path));
 		if (!gz) {
 			return std::nullopt;
@@ -86,9 +86,18 @@ namespace Compression {
 		const size_t budget = std::min<size_t>(limit, kMaxDecompressedBudget);
 		std::vector<uint8_t> out;
 
+		// ISIZE footer: an untrusted hint for memory reservation and for
+		// reporting how far the inflation has got.
+		const auto expected_size = readGzipUncompressedSize(path);
+		const size_t progress_total = expected_size
+			? std::min<size_t>(*expected_size, budget)
+			: 0;
+		if (on_progress) {
+			on_progress(0, progress_total);
+		}
+
 		// Pre-reserve memory using ISIZE footer as an untrusted hint (capped) or reasonable estimate (DOD)
 		if (limit == std::numeric_limits<size_t>::max()) {
-			const auto expected_size = readGzipUncompressedSize(path);
 			if (expected_size && *expected_size > 0) {
 				out.reserve(std::min<size_t>(*expected_size, kMaxInitialReserve));
 			} else {
@@ -115,6 +124,10 @@ namespace Compression {
 			out.resize(current_size + static_cast<size_t>(read));
 			if (read == 0) {
 				break;
+			}
+
+			if (on_progress) {
+				on_progress(out.size(), progress_total);
 			}
 		}
 

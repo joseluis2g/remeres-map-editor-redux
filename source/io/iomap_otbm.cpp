@@ -57,6 +57,7 @@
 #include <numeric>
 #include <unordered_map>
 #include <chrono>
+#include <limits>
 
 namespace {
 // Progress stages for saving. The progress bar closes itself when it reaches
@@ -225,7 +226,32 @@ bool IOMapOTBM::loadMapFromDisk(Map& map, const FileName& filename) {
 		g_gui.SetLoadDone(0, "Decompressing map...");
 	}
 
-	const auto buffer = is_gzip ? Compression::decompressGzipFile(path) : Compression::readRawFile(path);
+	// Decompression owns the first 5% of the load. Repaint at most every
+	// 100 ms: the inflater calls back every 64 KiB, far more often than a
+	// progress dialog can usefully redraw.
+	constexpr int32_t kDecompressStagePercent = 5;
+	constexpr auto kDecompressReportInterval = std::chrono::milliseconds(100);
+	auto last_decompress_report = std::chrono::steady_clock::time_point::min();
+	auto report_decompress = [&last_decompress_report](size_t done, size_t total) {
+		const auto now = std::chrono::steady_clock::now();
+		if (done < total && now - last_decompress_report < kDecompressReportInterval) {
+			return;
+		}
+		last_decompress_report = now;
+
+		const double done_mb = static_cast<double>(done) / (1024.0 * 1024.0);
+		if (total == 0) {
+			g_gui.SetLoadText(wxstr(std::format("Decompressing map ({:.1f} MB)...", done_mb)));
+			return;
+		}
+		const double total_mb = static_cast<double>(total) / (1024.0 * 1024.0);
+		const int32_t percent = static_cast<int32_t>(std::min<size_t>(done, total) * kDecompressStagePercent / total);
+		g_gui.SetLoadDone(percent, wxstr(std::format("Decompressing map ({:.1f} / {:.1f} MB)...", done_mb, total_mb)));
+	};
+
+	const auto buffer = is_gzip
+		? Compression::decompressGzipFile(path, std::numeric_limits<size_t>::max(), report_decompress)
+		: Compression::readRawFile(path);
 	if (!buffer) {
 		spdlog::error("Couldn't read{} map file: {}", is_gzip ? " compressed" : "", filename.GetFullPath().ToStdString());
 		return false;

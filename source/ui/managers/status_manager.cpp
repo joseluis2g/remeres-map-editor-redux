@@ -9,10 +9,35 @@
 
 StatusManager g_status;
 
-void StatusManager::SetStatusText(const wxString& text, int field) {
+void StatusManager::WriteStatusText(const wxString& text, int field) {
 	if (g_gui.root) {
 		g_gui.root->SetStatusText(text, field);
 	}
+}
+
+void StatusManager::SetStatusText(const wxString& text, int field) {
+	if (field == kResultField) {
+		// A normal message takes the field over; it must not inherit the hold of
+		// a previous summary.
+		result_until = {};
+	}
+	WriteStatusText(text, field);
+}
+
+bool StatusManager::ResultHeld() const {
+	return std::chrono::steady_clock::now() < result_until;
+}
+
+void StatusManager::SetResultText(const wxString& text, std::chrono::seconds hold) {
+	result_until = std::chrono::steady_clock::now() + hold;
+	WriteStatusText(text, kResultField);
+}
+
+void StatusManager::SetFpsText(const wxString& text) {
+	if (ResultHeld()) {
+		return;
+	}
+	WriteStatusText(text, kResultField);
 }
 
 void StatusManager::SetTitle(const wxString& title) {

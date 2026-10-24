@@ -24,6 +24,7 @@
 #include "live/live_server.h"
 #include "rendering/utilities/tile_describer.h"
 #include "app/settings.h"
+#include "ui/managers/status_manager.h"
 
 void MapStatusUpdater::Update(Editor& editor, int map_x, int map_y, int map_z) {
 	wxString ss;
@@ -45,5 +46,7 @@ void MapStatusUpdater::Update(Editor& editor, int map_x, int map_y, int map_z) {
 }
 
 void MapStatusUpdater::UpdateFPS(std::string_view fps_status) {
-	g_gui.root->SetStatusText(wxstr(fps_status), 0);
+	// Field 0 also carries save/load summaries; the status manager keeps those
+	// readable for a few seconds before handing the field back to the tick.
+	g_status.SetFpsText(wxstr(fps_status));
 }
